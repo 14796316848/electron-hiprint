@@ -59,9 +59,6 @@ jobs:
           - os: ubuntu-latest
             script: build-l-arm64
             name-suffix: linux_arm64
-          - os: ubuntu-latest
-            script: build-kylin
-            name-suffix: Kylin_x64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -141,12 +138,6 @@ jobs:
         with:
           name: linux_arm64
           path: artifacts/linux
-
-      - name: 下载 Kylin x64 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: Kylin_x64
-          path: artifacts/Kylin
 
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
