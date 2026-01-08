@@ -1,67 +1,104 @@
 name: Release Build
 
+# 触发条件：推送符合语义化版本的标签（正式版/测试版）
 on:
   push:
-    # 仅匹配 1.2.3 或 1.2.3-beta1 这样的 tag，例如 1.0.0、2.3.4-beta2
     tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
-      - "[0-9]+.[0-9]+.[0-9]+-beta[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+"                # 匹配正式版标签，如 1.0.0、2.3.4
+      - "[0-9]+.[0-9]+.[0-9]+-beta[0-9]+"     # 匹配测试版标签，如 1.0.0-beta1、2.3.4-beta2
 
-permissions: write-all
+# 权限配置：赋予发布所需的完整写入权限
+permissions:
+  contents: write
+  packages: write
+  actions: write
 
+# 并发控制：避免重复运行，master 分支不取消正在进行的任务
 concurrency:
   group: "${{ github.workflow }} - ${{ github.head_ref || github.ref }}"
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
+  # 第一步：校验版本号（tag 与 package.json 版本一致）
   check-version:
-    name: 校验版本号
+    name: 校验版本号一致性
     runs-on: ubuntu-latest
     steps:
-      - name: 拉取代码
+      - name: 拉取代码仓库
         uses: actions/checkout@v4
 
-      - name: 校验 package.json version 与 tag 一致
+      - name: 安装 jq 工具（用于解析 package.json）
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: 校验 tag 与 package.json version 匹配
+        id: version_check
         run: |
+          # 提取 tag 名称（去除 refs/tags/ 前缀）
           TAG_NAME="${GITHUB_REF##refs/tags/}"
+          # 提取 package.json 中的版本号
           PKG_VERSION=$(jq -r .version package.json)
+          
+          # 对比版本号
           if [[ "$PKG_VERSION" != "$TAG_NAME" ]]; then
-            echo "❌ package.json 里的 version ($PKG_VERSION) 和 tag ($TAG_NAME) 不一致，终止执行。"
+            echo "❌ 版本号不匹配：package.json = $PKG_VERSION，Tag = $TAG_NAME"
             exit 1
           fi
-          echo "✅ package.json 里的 version 和 tag ($TAG_NAME) 一致，继续执行。"
+          echo "✅ 版本号匹配：$TAG_NAME"
+          # 输出版本号供后续步骤使用
+          echo "VERSION=$TAG_NAME" >> $GITHUB_OUTPUT
 
+  # 第二步：多平台打包构建
   build:
-    name: 打包
-    needs: check-version
+    name: 构建 ${{ matrix.name-suffix }} 版本
+    needs: check-version  # 依赖版本校验通过
+    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
+      fail-fast: false  # 某个平台构建失败不影响其他平台
       matrix:
         include:
+          - os: windows-latest
+            script: build-w-64
+            name-suffix: win_x64
+          - os: windows-latest
+            script: build-w
+            name-suffix: win_ia32
+          - os: macos-latest
+            script: build-m-arm64
+            name-suffix: mac_arm64
+          - os: macos-latest
+            script: build-m
+            name-suffix: mac_x64
+          - os: macos-latest
+            script: build-m-universal
+            name-suffix: mac_universal
           - os: ubuntu-latest
             script: build-l
             name-suffix: linux_x64
           - os: ubuntu-latest
             script: build-l-arm64
             name-suffix: linux_arm64
+          - os: ubuntu-latest
+            script: build-kylin
+            name-suffix: Kylin_x64
 
-    runs-on: ${{ matrix.os }}
     steps:
-      - name: 拉取代码
+      - name: 拉取代码仓库
         uses: actions/checkout@v4
 
-      - name: 设置 Node.js
+      - name: 设置 Node.js 环境（18.x 版本）
         uses: actions/setup-node@v4
         with:
           node-version: "18"
+          cache: "npm"  # 缓存 npm 依赖，加速构建
 
-      - name: 安装依赖
-        run: npm install
+      - name: 安装项目依赖
+        run: npm ci  # 使用 ci 命令更严格，适合 CI 环境
 
-      - name: 打包 ${{ matrix.name-suffix }}
+      - name: 执行打包脚本
         run: npm run ${{ matrix.script }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          VERSION: ${{ needs.check-version.outputs.VERSION }}  # 传递版本号
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -72,47 +109,86 @@ jobs:
             out/*.dmg
             out/*.tar.xz
             out/*.deb
-          retention-days: 7
+            out/*.AppImage  # 补充常见 Linux 打包格式
+          retention-days: 7  # 产物保留 7 天
+          if-no-files-found: error  # 无产物时标记为错误
 
+  # 第三步：整合产物并发布 Release
   release:
-    name: 自动发布 Release
-    needs: build
+    name: 发布 Release 版本
+    needs: build  # 依赖所有构建任务完成
     runs-on: ubuntu-latest
     steps:
-      - name: 获取当前日期
+      - name: 设置环境变量（发布日期）
         run: echo "RELEASE_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
 
-      - name: 下载 linux x64 产物
+      # 下载所有平台的构建产物
+      - name: 下载 Windows 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: win_x64
+          path: artifacts/win
+      - name: 下载 Windows 32位产物
+        uses: actions/download-artifact@v4
+        with:
+          name: win_ia32
+          path: artifacts/win
+
+      - name: 下载 macOS ARM64 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: mac_arm64
+          path: artifacts/mac
+      - name: 下载 macOS x64 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: mac_x64
+          path: artifacts/mac
+      - name: 下载 macOS 通用版产物
+        uses: actions/download-artifact@v4
+        with:
+          name: mac_universal
+          path: artifacts/mac
+
+      - name: 下载 Linux x64 产物
         uses: actions/download-artifact@v4
         with:
           name: linux_x64
           path: artifacts/linux
-
-      - name: 下载 linux ARM64 产物
+      - name: 下载 Linux ARM64 产物
         uses: actions/download-artifact@v4
         with:
           name: linux_arm64
           path: artifacts/linux
 
-      - name: 发布 Release
+      - name: 下载麒麟 x64 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: Kylin_x64
+          path: artifacts/Kylin
+
+      # 列出产物目录（调试用，可选）
+      - name: 查看产物文件
+        run: |
+          echo "=== 产物目录结构 ==="
+          find artifacts -type f
+          echo "===================="
+
+      # 发布 GitHub Release
+      - name: 创建 Release 并上传产物
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }} (${{ env.RELEASE_DATE }})
-          draft: true
-          generate_release_notes: true
+          draft: true  # 草稿状态，需手动发布
+          generate_release_notes: true  # 自动生成发布说明
+          # 自定义发布说明
           body: |
-            Github Actions 自动发布的 Release
-
-            > [!IMPORTANT]
-            > macOS 提示应用程序已经损坏，解决方案
-            >
-            > [文件提示损坏解决办法 macwk.cn](https://macwk.cn/1144.html)
-            > `sudo xattr -r -d com.apple.quarantine /应用程序路径/hiprint.app`
-          files: |
-            artifacts/win/**
-            artifacts/mac/**
-            artifacts/linux/**
-          prerelease: ${{ contains(github.ref_name, 'beta') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            ## 🚀 版本发布 ${{ github.ref_name }}
+            发布时间：${{ env.RELEASE_DATE }}
+            由 GitHub Actions 自动构建并发布
+            
+            ### ⚠️ 重要提示（macOS 用户）
+            若提示「应用程序已损坏」，执行以下命令解决：
+            ```bash
+            sudo xattr -r -d com.apple.quarantine /应用程序路径/hiprint.app
