@@ -36,7 +36,7 @@ class ReName {
       let file = path.join(that.dirs, `${fileName}${e}`);
       let nFile = path.join(
         that.dirs,
-        `${productName}_${args["tag"]}-${version}${e}`,
+        `${productName}_${args["tag"]}-${version}${e}`
       );
       if (fs.existsSync(file)) {
         console.log("exist ", file);
