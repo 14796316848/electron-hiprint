@@ -166,10 +166,10 @@ async function createWindow() {
     },
   };
 
-  // 窗口左上角图标（开发 & 打包后都要设置）
-  windowOptions.icon = path.join(__dirname, "build/icons/icon.ico");
-
-  if (app.isPackaged) {
+  // 窗口左上角图标
+  if (!app.isPackaged) {
+    windowOptions.icon = path.join(__dirname, "build/icons/256x256.png");
+  } else {
     app.setLoginItemSettings({
       openAtLogin: store.get("openAtLogin"),
       openAsHidden: store.get("openAsHidden"),
