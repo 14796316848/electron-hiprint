@@ -5,10 +5,41 @@
  * @FilePath: \electron-hiprint\tools\log.js
  */
 const { app } = require("electron");
-const { access, appendFile, constants, writeFile } = require("node:fs");
+const { access, appendFile, constants, writeFile, readdir, unlink } = require("node:fs");
 const dayjs = require("dayjs");
 
 const logs = app.getPath('logs')
+
+/**
+ * 清理超过指定天数的日志文件
+ * @param {number} days - 保留天数，超过该天数的日志将被删除
+ * @returns {Promise} A Promise object that resolves when cleanup finishes.
+ */
+function cleanOldLogs(days = 3) {
+  return new Promise((resolve) => {
+    readdir(logs, (err, files) => {
+      if (err) {
+        resolve();
+        return;
+      }
+      const now = dayjs();
+      const tasks = [];
+      files.forEach((file) => {
+        const match = file.match(/^(\d{4}-\d{2}-\d{2})\.log$/);
+        if (!match) return;
+        const fileDate = dayjs(match[1], "YYYY-MM-DD");
+        if (!fileDate.isValid()) return;
+        const diff = now.diff(fileDate, "day");
+        if (diff > days) {
+          tasks.push(new Promise((res) => {
+            unlink(`${logs}/${file}`, () => res());
+          }));
+        }
+      });
+      Promise.all(tasks).then(() => resolve());
+    });
+  });
+}
 
 /**
  * This function checks if a log file exists. If it does not exist, a new log file will be created.
@@ -23,7 +54,8 @@ function checkLogFile() {
           if (err) {
             reject(err);
           } else {
-            resolve();
+            // 当天首次创建日志文件时，触发旧日志清理
+            cleanOldLogs(3).finally(() => resolve());
           }
         });
       } else {
